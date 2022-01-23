@@ -369,7 +369,7 @@ static ULONG MSAFD_WSPPoll(WSAPOLLFD *fdArray, ULONG fds, int timeout)
 	
 exit:
 	if (pollInfo && pollInfo != &buffer)
-		RtlFreeHeapFree(GetProcessHeap(), 0, pollInfo);
+		RtlFreeHeap(GetProcessHeap(), 0, pollInfo);
 
 	SetLastError(error);
 	return error ? SOCKET_ERROR : handlesReady;
@@ -390,7 +390,7 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 	}
 
 	ULONG pollInfoBufferSize = sizeof(WSAPOLLFD) * fds;
-	pollInfo = HeapAlloc(GetProcessHeap(), 0, pollInfoBufferSize);
+	pollInfo = (LPWSAPOLLFD)HeapAlloc(GetProcessHeap(), 0, pollInfoBufferSize);
 	if (!pollInfo)
 	{
 		error = WSAENOBUFS;
