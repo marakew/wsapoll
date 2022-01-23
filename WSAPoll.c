@@ -296,7 +296,7 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 	}
 
 	ULONG result = MSAFD_WSPPoll(pollInfo, fds, timeout);
-	if (result == INVALID_SOCKET)
+	if (result == SOCKET_ERROR)
 	{
 		error = GetLastError();
 		goto exit;
