@@ -1,9 +1,11 @@
 //WSAIoctl handler the same for
-//SIO_BASE_HANDLE
-//SIO_BSP_HANDLE
-//SIO_BSP_HANDLE_SELECT
-//SIO_BSP_HANDLE_POLL
+#define SIO_BASE_HANDLE _WSAIOR(IOC_WS2,34)
+#define SIO_BSP_HANDLE _WSAIOR(IOC_WS2,27)
+#define SIO_BSP_HANDLE_SELECT _WSAIOR(IOC_WS2,28)
+#define SIO_BSP_HANDLE_POLL _WSAIOR(IOC_WS2,29) //   0x4800001D
 //SOCKET_ERROR / WSAEFAULT
+#define SIO_EXT_SELECT _WSAIORW(IOC_WS2,30)
+#define SIO_EXT_POLL _WSAIORW(IOC_WS2,31) //   0xC800001F
 
 //
 // Structures for IOCTL_AFD_POLL.
@@ -432,6 +434,10 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 	ULONG error = NO_ERROR;
 
 	LPWSAPOLLFD pollInfo = NULL;
+	DWORD BytesReturned = 0;
+
+	BOOL found = FALSE;
+	SOCKET foundfd = INVALID_SOCKET;
 
 	if (fds == 0)
 	{
@@ -439,22 +445,18 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 		goto exit;
 	}
 
-	ULONG pollInfoBufferSize = sizeof(WSAPOLLFD) * fds;
+	ULONG pollInfoBufferSize = sizeof(WSAPOLLFD) * (fds+1);
 	pollInfo = (LPWSAPOLLFD)ALLOCATE_HEAP_(pollInfoBufferSize);
 	if (!pollInfo)
 	{
 		error = WSAENOBUFS;
 		goto exit;
 	}
-	memcpy(pollInfo, fdArray, pollInfoBufferSize);
-
-	BOOL found = FALSE;
-	SOCKET foundfd = INVALID_SOCKET;
+	memcpy(pollInfo, fdArray, sizeof(WSAPOLLFD) * fds);
 
 	for (i = 0; i < fds; ++i)
 	{
 		SOCKET nativefd = INVALID_SOCKET;
-		DWORD BytesReturned = 0;
 		SOCKET fd = pollInfo[i].fd;
 		if (fd == INVALID_SOCKET)
 		{
@@ -481,8 +483,19 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 		error = WSAENOTSOCK;
 		goto exit;
 	}
-
+#if 0 //TODO
+	pollInfo->result = 0;
+	pollInfo->fds = fds;
+	pollInfo->timeout = timeout;
+	ULONG result = WSAIoctl(foundfd,
+				SIO_EXT_POLL,
+				pollInfo, pollInfoBufferSize,
+				pollInfo, pollInfoBufferSize,
+				&BytesReturned,
+				NULL, NULL);				
+#else
 	ULONG result = MSAFD_WSPPoll(pollInfo, fds, timeout);
+#endif
 	if (result == SOCKET_ERROR)
 	{
 		error = GetLastError();
