@@ -199,6 +199,9 @@ static INT NtStatusToSocketError(NTSTATUS Status)
 	}
 }
 
+#define ALLOCATE_HEAP(a) RtlAllocateHeap(RtlProcessHeap(), 0, a)
+#define FREE_HEAP(a) RtlFreeHeap(RtlProcessHeap(), 0, a)
+
 static ULONG MSAFD_WSPPoll(WSAPOLLFD *fdArray, ULONG fds, int timeout)
 {
 	NTSTATUS status;
@@ -230,7 +233,7 @@ static ULONG MSAFD_WSPPoll(WSAPOLLFD *fdArray, ULONG fds, int timeout)
 	pollBufferSize = sizeof(AFD_POLL_INFO)+sizeof(AFD_POLL_HANDLE_INFO)*fds;
 	if (pollBufferSize > (sizeof(AFD_POLL_INFO)+sizeof(AFD_POLL_HANDLE_INFO)*POLL_STATIC_SIZE))
 	{
-		pollInfo = (AFD_POLL_INFO *)RtlAllocateHeap(GetProcessHeap(), 0, pollBufferSize);
+		pollInfo = (AFD_POLL_INFO *)ALLOCATE_HEAP(pollBufferSize);
 		if (!pollInfo)
 		{
 			error = WSAENOBUFS;
@@ -302,17 +305,57 @@ static ULONG MSAFD_WSPPoll(WSAPOLLFD *fdArray, ULONG fds, int timeout)
 	pollInfo->NumberOfHandles = handleCount;
 	pollInfo->Unique = FALSE;
 
+	status = NtCreateEvent(
+			&eventHandle,
+			EVENT_ALL_ACCESS,
+			NULL,
+			SynchronizationEvent,
+			FALSE);
+
+	if (!NT_SUCCESS(status))
+	{
+		error = NtStatusToSocketError(status);
+		goto exit;
+	}
+	
 	status = NtDeviceIoControlFile(pollInfo->Handles[0].Handle,
-					NULL, //??? TODO
-					NULL,
-					NULL,
+					eventHandle,
+					NULL, //APC Routine
+					NULL, //APC Context
 					&ioStatusBlock,
 					IOCTL_AFD_POLL, //0x12024
 					pollInfo, pollBufferSize,
 					pollInfo, pollBufferSize);
 	if (status == STATUS_PENDING)
 	{
-		//??? TODO
+		LARGE_INTEGER timeout;
+		timeout.HighPart = 0xFFFFFFFF;
+		timeout.LowPart = (ULONG)(-1 * (10*1000*500));     // 0.5 seconds
+
+		status = NtWaitForSingleObject(eventHandle, TRUE, &timeout);
+		if (status != STATUS_SUCCESS)
+		{
+			LARGE_INTEGER endTime;
+			// infinet timeout
+			endTime.LowPart = 0xFFFFFFFF;
+			endTime.HighPart = 0x7FFFFFFF;
+
+			if (pollInfo->Timeout == 0)
+			{
+				timeout = endTime;
+			} else
+			{
+				timeout.LowPart = 0xFFFFFFFF;
+				timeout.HighPart = 0xFFFFFFFF;
+			}
+
+			do {
+				status = NtWaitForSingleObject(eventHandle, TRUE, &timeout);
+			} while (status == STATUS_USER_APC ||
+				 status == STATUS_ALERTED ||
+				 status == STATUS_TIMEOUT);
+		}
+		status = ioStatusBlock.Status;
 	}
 
 	if (!NT_SUCCESS(status))
@@ -366,15 +409,22 @@ static ULONG MSAFD_WSPPoll(WSAPOLLFD *fdArray, ULONG fds, int timeout)
 	}
 
 	handlesReady = pollInfo->NumberOfHandles;
-	
 exit:
 	if (pollInfo && pollInfo != &buffer)
-		RtlFreeHeap(GetProcessHeap(), 0, pollInfo);
+	{
+		FREE_HEAP(pollInfo);
+	}
 
+	if (eventHandle != NULL)
+	{
+		NtClose(eventHandle);
+	}
 	SetLastError(error);
 	return error ? SOCKET_ERROR : handlesReady;
 }
 
+#define ALLOCATE_HEAP_(a) HeapAlloc(GetProcessHeap(), 0, a)
+#define FREE_HEAP_(a) HeapFree(GetProcessHeap(), 0, a)
 
 int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 {
@@ -390,7 +440,7 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 	}
 
 	ULONG pollInfoBufferSize = sizeof(WSAPOLLFD) * fds;
-	pollInfo = (LPWSAPOLLFD)HeapAlloc(GetProcessHeap(), 0, pollInfoBufferSize);
+	pollInfo = (LPWSAPOLLFD)ALLOCATE_HEAP_(pollInfoBufferSize);
 	if (!pollInfo)
 	{
 		error = WSAENOBUFS;
@@ -409,19 +459,21 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 		if (fd == INVALID_SOCKET)
 		{
 			fdArray[i].revents = POLLNVAL;
-		} else
+			continue;
+		}
+
 		if (WSAIoctl(fd, SIO_BSP_HANDLE_POLL, NULL, NULL, &nativefd, sizeof(nativefd), &BytesReturned, NULL, NULL) == SOCKET_ERROR)
 		{
 			fdArray[i].revents = POLLNVAL;
-		} else
-		{
-			if (!found)
-			{
-				foundfd = nativefd;
-				found = TRUE;
-			}
-			pollInfo[i].fd = nativefd;
+			continue;
 		}
+		
+		if (!found)
+		{
+			foundfd = nativefd;
+			found = TRUE;
+		}
+		pollInfo[i].fd = nativefd;
 	}
 	
 	if (!found)
@@ -441,11 +493,13 @@ int WSAPoll(LPWSAPOLLFD fdArray, ULONG fds, INT timeout)
 	{
 		fdArray[i].revents = pollInfo[i].revents;
 	}
-	HeapFree(GetProcessHeap(), 0, pollInfo);
+	FREE_HEAP_(pollInfo);
 	return result;
 exit:
-	if (pollInfo)
-		HeapFree(GetProcessHeap(), 0, pollInfo);
+	if (pollInfo != NULL)
+	{
+		FREE_HEAP_(pollInfo);
+	}
 	SetLastError(error);
 	return SOCKET_ERROR;
 }
